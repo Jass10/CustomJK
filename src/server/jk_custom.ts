@@ -1,5 +1,5 @@
 import '@servicenow/sdk/global'
-import { Table, StringColumn, MultiLineTextColumn, Form, default_view } from '@servicenow/sdk/core'
+import { Table, StringColumn, MultiLineTextColumn, DateColumn, Form, default_view } from '@servicenow/sdk/core'
 
 export const x_2195039_jk_custo_jk_custom = Table({
     name: 'x_2195039_jk_custo_jk_custom',
@@ -8,6 +8,7 @@ export const x_2195039_jk_custo_jk_custom = Table({
     schema: {
         name: StringColumn({ label: 'Name', mandatory: true, maxLength: 100 }),
         description: MultiLineTextColumn({ label: 'Description', maxLength: 4000 }),
+        expired_date: DateColumn({ label: 'Expired Date' }),
     },
 })
 
@@ -22,6 +23,7 @@ Form({
                     layout: 'one-column',
                     elements: [
                         { field: 'name', type: 'table_field' },
+                        { field: 'expired_date', type: 'table_field' },
                         { field: 'description', type: 'table_field' },
                     ],
                 },
