@@ -1,0 +1,42 @@
+name: ServiceNow OAuth Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  call-servicenow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get ServiceNow access token
+        env:
+          SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
+          SNOW_CLIENT_ID: ${{ secrets.SNOW_CLIENT_ID }}
+          SNOW_CLIENT_SECRET: ${{ secrets.SNOW_CLIENT_SECRET }}
+          SNOW_USERNAME: ${{ secrets.SNOW_USERNAME }}
+          SNOW_PASSWORD: ${{ secrets.SNOW_PASSWORD }}
+        run: |
+          RESPONSE=$(curl -s -X POST "https://${SNOW_INSTANCE}.service-now.com/oauth_token.do" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=password" \
+            --data-urlencode "client_id=${SNOW_CLIENT_ID}" \
+            --data-urlencode "client_secret=${SNOW_CLIENT_SECRET}" \
+            --data-urlencode "username=${SNOW_USERNAME}" \
+            --data-urlencode "password=${SNOW_PASSWORD}")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
+            echo "Token request failed:"
+            echo "$RESPONSE" | jq -r '.error_description // .error // "unknown error"'
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "SNOW_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Call ServiceNow Table API
+        env:
+          SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
+        run: |
+          curl -s -H "Authorization: Bearer $SNOW_TOKEN" \
+            -H "Accept: application/json" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/sys_user?sysparm_limit=1" | jq .
