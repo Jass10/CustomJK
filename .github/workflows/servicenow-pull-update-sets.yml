@@ -1,0 +1,87 @@
+name: Pull ServiceNow Committed Update Sets
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Only sets updated in the last N days (0 = all)'
+        required: false
+        default: '30'
+
+jobs:
+  pull-update-sets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get ServiceNow access token
+        env:
+          SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
+          SNOW_CLIENT_ID: ${{ secrets.SNOW_CLIENT_ID }}
+          SNOW_CLIENT_SECRET: ${{ secrets.SNOW_CLIENT_SECRET }}
+          SNOW_USERNAME: ${{ secrets.SNOW_USERNAME }}
+          SNOW_PASSWORD: ${{ secrets.SNOW_PASSWORD }}
+        run: |
+          RESPONSE=$(curl -s -X POST "https://${SNOW_INSTANCE}.service-now.com/oauth_token.do" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=password" \
+            --data-urlencode "client_id=${SNOW_CLIENT_ID}" \
+            --data-urlencode "client_secret=${SNOW_CLIENT_SECRET}" \
+            --data-urlencode "username=${SNOW_USERNAME}" \
+            --data-urlencode "password=${SNOW_PASSWORD}")
+
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
+            echo "Token request failed:"
+            echo "$RESPONSE" | jq -r '.error_description // .error // "unknown error"'
+            exit 1
+          fi
+
+          echo "::add-mask::$TOKEN"
+          echo "SNOW_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Fetch committed update sets
+        env:
+          SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          mkdir -p snow-export
+          QUERY="state=complete"
+          if [ "$DAYS" != "0" ]; then
+            QUERY="${QUERY}^sys_updated_on>=javascript:gs.daysAgoStart(${DAYS})"
+          fi
+          QUERY="${QUERY}^ORDERBYDESCsys_updated_on"
+
+          HTTP_CODE=$(curl -s -G -o snow-export/update_sets.json -w "%{http_code}" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/sys_update_set" \
+            -H "Authorization: Bearer $SNOW_TOKEN" \
+            -H "Accept: application/json" \
+            --data-urlencode "sysparm_query=${QUERY}" \
+            --data-urlencode "sysparm_fields=sys_id,name,application,state,sys_created_by,sys_updated_on" \
+            --data-urlencode "sysparm_limit=1000")
+
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            jq . snow-export/update_sets.json
+            exit 1
+          fi
+          echo "Committed update sets found: $(jq '.result | length' snow-export/update_sets.json)"
+
+      - name: Fetch changes in each update set
+        env:
+          SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
+        run: |
+          for SET_ID in $(jq -r '.result[].sys_id' snow-export/update_sets.json); do
+            curl -s -G -o "snow-export/changes_${SET_ID}.json" \
+              "https://${SNOW_INSTANCE}.service-now.com/api/now/table/sys_update_xml" \
+              -H "Authorization: Bearer $SNOW_TOKEN" \
+              -H "Accept: application/json" \
+              --data-urlencode "sysparm_query=update_set=${SET_ID}" \
+              --data-urlencode "sysparm_fields=sys_id,name,type,target_name,action,payload" \
+              --data-urlencode "sysparm_limit=10000"
+          done
+
+      - name: Upload export as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servicenow-update-sets
+          path: snow-export/
+          retention-days: 30
