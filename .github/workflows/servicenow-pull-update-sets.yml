@@ -37,6 +37,7 @@ jobs:
 
           echo "::add-mask::$TOKEN"
           echo "SNOW_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "Token scope: $(echo "$RESPONSE" | jq -r '.scope // "none"')"
 
       - name: Fetch committed update sets
         env:
