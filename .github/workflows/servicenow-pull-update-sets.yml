@@ -94,12 +94,38 @@ jobs:
       - name: Commit update sets to repository
         run: |
           DEST="servicenow/update-sets"
+
+          # Rebuild the folder each run so files from deleted or old sets don't linger
+          rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp -r snow-export/. "$DEST/"
+          cp snow-export/update_sets.json "$DEST/update_sets.json"
+
+          # Create the README index
+          {
+            echo "# ServiceNow update sets"
+            echo ""
+            echo "Exported: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "| Update set name | State | Last updated | sys_id | File |"
+            echo "|---|---|---|---|---|"
+          } > "$DEST/README.md"
+
+          # One readable file per update set, named after the update set
+          jq -r '.result[] | [.sys_id, .name, .state, .sys_updated_on] | @tsv' snow-export/update_sets.json | \
+          while IFS=$'\t' read -r SET_ID NAME STATE UPDATED; do
+            SAFE_NAME=$(echo "$NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
+            FILE="${SAFE_NAME}__${SET_ID}.json"
+            MD_NAME=$(echo "$NAME" | sed 's/|/\\|/g')
+
+            if [ -f "snow-export/changes_${SET_ID}.json" ]; then
+              cp "snow-export/changes_${SET_ID}.json" "$DEST/$FILE"
+            fi
+            echo "| $MD_NAME | $STATE | $UPDATED | $SET_ID | \`$FILE\` |" >> "$DEST/README.md"
+          done
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$DEST"
+          git add -A "$DEST"
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
