@@ -95,10 +95,9 @@ jobs:
         run: |
           DEST="servicenow/update-sets"
 
-          # Rebuild the folder each run so files from deleted or old sets don't linger
+          # Rebuild the folder each run so files from old sets don't linger
           rm -rf "$DEST"
           mkdir -p "$DEST"
-          cp snow-export/update_sets.json "$DEST/update_sets.json"
 
           # Create the README index
           {
@@ -106,21 +105,31 @@ jobs:
             echo ""
             echo "Exported: $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo ""
-            echo "| Update set name | State | Last updated | sys_id | File |"
+            echo "| Update set name | State | Last updated | sys_id | Folder |"
             echo "|---|---|---|---|---|"
           } > "$DEST/README.md"
 
-          # One readable file per update set, named after the update set
+          # One folder per update set, containing one XML file per change
           jq -r '.result[] | [.sys_id, .name, .state, .sys_updated_on] | @tsv' snow-export/update_sets.json | \
           while IFS=$'\t' read -r SET_ID NAME STATE UPDATED; do
             SAFE_NAME=$(echo "$NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
-            FILE="${SAFE_NAME}__${SET_ID}.json"
+            FOLDER="${SAFE_NAME}__${SET_ID}"
             MD_NAME=$(echo "$NAME" | sed 's/|/\\|/g')
+            mkdir -p "$DEST/$FOLDER"
 
-            if [ -f "snow-export/changes_${SET_ID}.json" ]; then
-              cp "snow-export/changes_${SET_ID}.json" "$DEST/$FILE"
+            COUNT=0
+            SRC="snow-export/changes_${SET_ID}.json"
+            if [ -f "$SRC" ]; then
+              while read -r REC; do
+                CID=$(echo "$REC" | jq -r '.sys_id')
+                TARGET=$(echo "$REC" | jq -r '.target_name // "change"' | sed 's/[^A-Za-z0-9._-]/_/g')
+                # The payload field holds the XML for this change
+                echo "$REC" | jq -r '.payload // empty' > "$DEST/$FOLDER/${TARGET}__${CID}.xml"
+                COUNT=$((COUNT+1))
+              done < <(jq -c '.result[]?' "$SRC")
             fi
-            echo "| $MD_NAME | $STATE | $UPDATED | $SET_ID | \`$FILE\` |" >> "$DEST/README.md"
+
+            echo "| $MD_NAME | $STATE | $UPDATED | $SET_ID | \`$FOLDER/\` ($COUNT changes) |" >> "$DEST/README.md"
           done
 
           git config user.name "github-actions[bot]"
