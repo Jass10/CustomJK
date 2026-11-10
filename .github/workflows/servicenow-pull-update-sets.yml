@@ -11,7 +11,12 @@ on:
 jobs:
   pull-update-sets:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Get ServiceNow access token
         env:
           SNOW_INSTANCE: ${{ vars.SNOW_INSTANCE }}
@@ -37,7 +42,6 @@ jobs:
 
           echo "::add-mask::$TOKEN"
           echo "SNOW_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-          echo "Token scope: $(echo "$RESPONSE" | jq -r '.scope // "none"')"
 
       - name: Fetch committed update sets
         env:
@@ -86,3 +90,21 @@ jobs:
           name: servicenow-update-sets
           path: snow-export/
           retention-days: 30
+
+      - name: Commit update sets to repository
+        run: |
+          DEST="servicenow/update-sets"
+          mkdir -p "$DEST"
+          cp -r snow-export/. "$DEST/"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$DEST"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Export ServiceNow update sets ($(date -u +%Y-%m-%d))"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
