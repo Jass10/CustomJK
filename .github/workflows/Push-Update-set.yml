@@ -1,23 +1,48 @@
-name: Push ServiceNow Update Set to Target
+name: Prepare ServiceNow Update Set for Target
 
 on:
   workflow_dispatch:
     inputs:
       update_set_folder:
-        description: 'Folder name under servicenow/update-sets/ to deploy'
+        description: 'Folder name under servicenow/update-sets/ (copy it from the repository)'
         required: true
 
 jobs:
-  deploy:
+  prepare:
     runs-on: ubuntu-latest
-    environment: servicenow-prod   # requires reviewers
-    timeout-minutes: 30
+    environment: servicenow-prod      # Requires reviewers approval before the job runs
+    timeout-minutes: 15
     concurrency:
       group: servicenow-deploy-prod
       cancel-in-progress: false
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Locate and validate update set XML
+        env:
+          FOLDER: ${{ inputs.update_set_folder }}
+        run: |
+          DIR="servicenow/update-sets/$FOLDER"
+          if [ ! -d "$DIR" ]; then
+            echo "Folder not found: $DIR"
+            exit 1
+          fi
+
+          COUNT=0
+          for FILE in "$DIR"/*.xml; do
+            [ -e "$FILE" ] || continue
+            COUNT=$((COUNT+1))
+            # Fail the run if any XML file is not well formed
+            python3 -c "import sys, xml.etree.ElementTree as ET; ET.parse(sys.argv[1])" "$FILE" \
+              || { echo "Invalid XML: $FILE"; exit 1; }
+          done
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No XML files found in $DIR"
+            exit 1
+          fi
+          echo "Validated $COUNT XML file(s) in $DIR"
 
       - name: Get target access token
         env:
@@ -27,18 +52,48 @@ jobs:
           TARGET_SNOW_USERNAME: ${{ secrets.TARGET_SNOW_USERNAME }}
           TARGET_SNOW_PASSWORD: ${{ secrets.TARGET_SNOW_PASSWORD }}
         run: |
-          # Same token request as the pull workflow, using the target values
-          # ...
+          RESPONSE=$(curl -s -X POST "https://${TARGET_SNOW_INSTANCE}.service-now.com/oauth_token.do" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=password" \
+            --data-urlencode "client_id=${TARGET_SNOW_CLIENT_ID}" \
+            --data-urlencode "client_secret=${TARGET_SNOW_CLIENT_SECRET}" \
+            --data-urlencode "username=${TARGET_SNOW_USERNAME}" \
+            --data-urlencode "password=${TARGET_SNOW_PASSWORD}")
 
-      - name: Locate update set XML
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
+            echo "Target token request failed:"
+            echo "$RESPONSE" | jq -r '.error_description // .error // "unknown error"'
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "Target authentication succeeded"
+
+      - name: Package files for manual import
         env:
           FOLDER: ${{ inputs.update_set_folder }}
         run: |
-          XML=$(find "servicenow/update-sets/$FOLDER" -name '*.xml' | head -n 1)
-          test -n "$XML" || { echo "No update set XML found in $FOLDER"; exit 1; }
-          echo "Found: $XML"
+          mkdir -p import-package
+          cp -r "servicenow/update-sets/$FOLDER" "import-package/$FOLDER"
+          cp servicenow/update-sets/README.md import-package/ 2>/dev/null || true
 
-      - name: Import into target (placeholder)
+      - name: Upload import package
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-package-${{ inputs.update_set_folder }}
+          path: import-package/
+          retention-days: 14
+
+      - name: Summary
+        env:
+          FOLDER: ${{ inputs.update_set_folder }}
         run: |
-          echo "Replace this step with the import method confirmed in Step 2."
-          exit 1
+          {
+            echo "## Import package ready"
+            echo ""
+            echo "Folder: \`$FOLDER\`"
+            echo ""
+            echo "Next step (manual import): download the artifact, then on the target instance go to"
+            echo "System Update Sets > Retrieved Update Sets > Import Update Set from XML, upload the XML,"
+            echo "preview the set, and commit it after reviewing conflicts."
+          } >> "$GITHUB_STEP_SUMMARY"
